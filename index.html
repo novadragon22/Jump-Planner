@@ -161,18 +161,6 @@
       <span id="authArea"></span>
     </div>
   </div>
-  <div class="overlay" id="loginModal">
-    <div class="lm">
-      <div class="lm-h"><span class="d diamond"></span>Sign in with EVE Online</div>
-      <p class="lm-p">The map's public layers (systems, gates, sovereignty, NPC stations, kills) work without signing in. Logging in pins your pilot's live location and authenticates ESI requests for higher rate limits.</p>
-      <label class="lbl">Application Client ID</label>
-      <input class="fld" id="lmClient" placeholder="your developers.eveonline.com app client id" autocomplete="off">
-      <label class="lbl" style="margin-top:10px">Callback URL — register this exact value in your app</label>
-      <div class="ro" id="lmRedirect"></div>
-      <div class="lm-act"><button class="btn-gold" id="lmGo">Authorize</button><button class="btn-x" id="lmCancel">Cancel</button></div>
-      <div class="lm-hint">App type: Authentication Only (PKCE). Scopes: <b>publicData</b>, <b>esi-location.read_location.v1</b>.</div>
-    </div>
-  </div>
   <div class="main">
     <div class="side">
       <div class="sec">
@@ -329,11 +317,12 @@ function setKill(s,t){ document.getElementById('killDot').className='dot '+s; do
 function killHeat(id){ const k=killmap[id]; if(!k) return 0; return (k.s+k.p)/maxKill; }
 
 // ---- ESI auth (PKCE, optional — public layers work without it) ----
-const AUTH_KEY='eve_jfp_token', CID_KEY='eve_jfp_clientid';
+const AUTH_KEY='eve_jfp_token';
+const APP_CONFIG={ clientId:'6edf01f1ac0748c7852ce537058ad4ff', redirectUri:'https://novadragon22.github.io/Jump-Planner/' };
 const SSO_AUTH='https://login.eveonline.com/v2/oauth/authorize/', SSO_TOKEN='https://login.eveonline.com/v2/oauth/token';
 const SCOPES=['publicData','esi-location.read_location.v1'];
 let session=null, pilotSys=null;
-function redirectUri(){ return location.origin+location.pathname; }
+function redirectUri(){ return APP_CONFIG.redirectUri; }
 function authHeaders(){ return session&&session.access?{Authorization:'Bearer '+session.access}:{}; }
 function b64url(b){return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 async function sha256(s){return await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));}
@@ -342,32 +331,29 @@ function jwtPayload(t){return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').
 function lget(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
 function lset(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 function ldel(k){try{localStorage.removeItem(k);}catch(e){}}
-const loginModal=document.getElementById('loginModal');
-function openLogin(){ document.getElementById('lmRedirect').textContent=redirectUri(); const c=lget(CID_KEY); if(c)document.getElementById('lmClient').value=c; loginModal.classList.add('on'); }
-window.openLogin=openLogin;
-document.getElementById('lmCancel').onclick=()=>loginModal.classList.remove('on');
-document.getElementById('lmGo').onclick=async()=>{
-  const cid=document.getElementById('lmClient').value.trim(); if(!cid)return; lset(CID_KEY,cid);
+async function startAuth(){
   const verifier=randStr(48),challenge=b64url(await sha256(verifier)),state=randStr(12);
   lset('eve_jfp_pkce',{verifier,state});
   const u=new URL(SSO_AUTH);
-  u.searchParams.set('response_type','code');u.searchParams.set('redirect_uri',redirectUri());u.searchParams.set('client_id',cid);
+  u.searchParams.set('response_type','code');u.searchParams.set('redirect_uri',APP_CONFIG.redirectUri);u.searchParams.set('client_id',APP_CONFIG.clientId);
   u.searchParams.set('scope',SCOPES.join(' '));u.searchParams.set('code_challenge',challenge);u.searchParams.set('code_challenge_method','S256');u.searchParams.set('state',state);
   location.assign(u.toString());
-};
+}
+function openLogin(){ startAuth(); }
+window.openLogin=openLogin;
 async function resumeAuth(){
   const p=new URLSearchParams(location.search), code=p.get('code'), state=p.get('state'); if(!code)return;
   history.replaceState({},'',location.pathname);
-  const pk=lget('eve_jfp_pkce'), cid=lget(CID_KEY); if(!pk||state!==pk.state||!cid)return;
-  try{ const body=new URLSearchParams({grant_type:'authorization_code',code,client_id:cid,code_verifier:pk.verifier,redirect_uri:redirectUri()});
+  const pk=lget('eve_jfp_pkce'); if(!pk||state!==pk.state)return;
+  try{ const body=new URLSearchParams({grant_type:'authorization_code',code,client_id:APP_CONFIG.clientId,code_verifier:pk.verifier,redirect_uri:APP_CONFIG.redirectUri});
     const r=await fetch(SSO_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); if(!r.ok)throw new Error();
     const tok=await r.json(); const pl=jwtPayload(tok.access_token);
-    session={access:tok.access_token,refresh:tok.refresh_token,expires:Date.now()+(tok.expires_in||1200)*1000,charId:(pl.sub||'').split(':').pop(),charName:pl.name,clientId:cid};
+    session={access:tok.access_token,refresh:tok.refresh_token,expires:Date.now()+(tok.expires_in||1200)*1000,charId:(pl.sub||'').split(':').pop(),charName:pl.name,clientId:APP_CONFIG.clientId};
     lset(AUTH_KEY,session); ldel('eve_jfp_pkce');
   }catch(e){}
 }
 async function refreshAuth(){ if(!session||!session.refresh)return null;
-  try{ const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:session.refresh,client_id:session.clientId});
+  try{ const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:session.refresh,client_id:APP_CONFIG.clientId});
     const r=await fetch(SSO_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); if(!r.ok)throw new Error();
     const tok=await r.json(); session={...session,access:tok.access_token,refresh:tok.refresh_token||session.refresh,expires:Date.now()+(tok.expires_in||1200)*1000}; lset(AUTH_KEY,session); return session;
   }catch(e){return null;} }
