@@ -126,6 +126,16 @@
   .note{font-family:var(--mono);font-size:9.5px;color:var(--muted);line-height:1.5;padding:11px 14px;border-top:1px solid var(--line)}
   .note b{color:var(--gold)}
   .hl{color:var(--rederr)}
+  .wpchar{margin-left:6px;background:rgba(10,14,20,.8);border:1px solid var(--line2);color:var(--cyan);font-family:var(--mono);font-size:9.5px;padding:3px 4px;max-width:96px}
+  .leg-char{font-family:var(--mono);font-size:9px;color:var(--cyan-bright);margin-top:3px;letter-spacing:.04em}
+  .leg-threat{font-family:var(--mono);font-size:9.5px;margin-top:3px;letter-spacing:.03em}
+  .leg-threat.t0{color:var(--muted)} .leg-threat.t1{color:var(--amber)} .leg-threat.t2{color:var(--rederr)} .leg-threat.t3{color:#ff7a6a;font-weight:600}
+  .confirm-bar{display:flex;flex-direction:column;gap:8px;margin-bottom:11px}
+  .confirm-btn{padding:9px 12px;border:1px solid var(--gold);background:linear-gradient(180deg,rgba(201,168,104,.18),rgba(201,168,104,.07));color:var(--gold-bright);font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
+  .confirm-btn:hover{background:linear-gradient(180deg,rgba(201,168,104,.3),rgba(201,168,104,.14))}
+  .confirm-btn.live{border-color:var(--red);color:var(--rederr);background:linear-gradient(180deg,rgba(214,106,90,.16),rgba(214,106,90,.06))}
+  .confirm-stat{font-family:var(--mono);font-size:9.5px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .confirm-stat .dot{width:6px;height:6px;border-radius:50%}
 
   .auth-btn{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--gold);color:var(--gold-bright);padding:5px 11px;background:rgba(201,168,104,.1);cursor:pointer}
   .auth-btn:hover{background:rgba(201,168,104,.2)}
@@ -189,6 +199,7 @@
       </div>
       <div class="sec">
         <h3><span class="d diamond"></span>Route</h3>
+        <div id="confirmBar"></div>
         <div class="legs" id="legs"></div>
         <div class="tot" id="tot" style="margin-top:10px"></div>
       </div>
@@ -251,7 +262,7 @@ function jumpable(i){ const c=secClass(SYS[i][2]); const rg=regionOf(i); return 
 
 // ---- state ----
 let ship='anshar', JDC=5, JFC=5, JF=5, fatRed=true;
-let waypoints=[]; // system indices
+let waypoints=[]; // [{i:sysIndex, char:charId|null}]
 let killmap={}; // id -> {s,p,n}
 let showGates=true, showHeat=false;
 let maxKill=1;
@@ -296,14 +307,15 @@ async function loadKills(){
 function setKill(s,t){ document.getElementById('killDot').className='dot '+s; document.getElementById('killTxt').textContent=t; }
 function killHeat(id){ const k=killmap[id]; if(!k) return 0; return (k.s+k.p)/maxKill; }
 
-// ---- ESI auth (PKCE, optional — public layers work without it) ----
-const AUTH_KEY='eve_jfp_token';
+// ---- ESI auth (PKCE, multi-character) ----
+const AUTH_KEY='eve_jfp_token', CHARS_KEY='eve_jfp_chars';
 const APP_CONFIG={ clientId:'6edf01f1ac0748c7852ce537058ad4ff', redirectUri:'https://novadragon22.github.io/Jump-Planner/' };
 const SSO_AUTH='https://login.eveonline.com/v2/oauth/authorize/', SSO_TOKEN='https://login.eveonline.com/v2/oauth/token';
 const SCOPES=['publicData','esi-location.read_location.v1'];
-let session=null, pilotSys=null;
+let chars={};            // charId -> {access,refresh,expires,charName}
+let pilotByChar={};      // charId -> system index (live location)
+function anyChar(){ return Object.keys(chars).length>0; }
 function redirectUri(){ return APP_CONFIG.redirectUri; }
-function authHeaders(){ return session&&session.access?{Authorization:'Bearer '+session.access}:{}; }
 function b64url(b){return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 async function sha256(s){return await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));}
 function randStr(n){const a=new Uint8Array(n);crypto.getRandomValues(a);return b64url(a.buffer);}
@@ -311,6 +323,9 @@ function jwtPayload(t){return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').
 function lget(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
 function lset(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 function ldel(k){try{localStorage.removeItem(k);}catch(e){}}
+function saveChars(){ lset(CHARS_KEY,chars); }
+function loadChars(){ chars=lget(CHARS_KEY)||{};
+  const old=lget(AUTH_KEY); if(old&&old.charId&&!chars[old.charId]){ chars[old.charId]={access:old.access,refresh:old.refresh,expires:old.expires,charName:old.charName}; ldel(AUTH_KEY); saveChars(); } }
 async function startAuth(){
   const verifier=randStr(48),challenge=b64url(await sha256(verifier)),state=randStr(12);
   lset('eve_jfp_pkce',{verifier,state});
@@ -319,33 +334,39 @@ async function startAuth(){
   u.searchParams.set('scope',SCOPES.join(' '));u.searchParams.set('code_challenge',challenge);u.searchParams.set('code_challenge_method','S256');u.searchParams.set('state',state);
   location.assign(u.toString());
 }
-function openLogin(){ startAuth(); }
-window.openLogin=openLogin;
+function openLogin(){ startAuth(); }           // adds another character
+window.openLogin=openLogin; window.addChar=openLogin;
 async function resumeAuth(){
   const p=new URLSearchParams(location.search), code=p.get('code'), state=p.get('state'); if(!code)return;
   history.replaceState({},'',location.pathname);
   const pk=lget('eve_jfp_pkce'); if(!pk||state!==pk.state)return;
   try{ const body=new URLSearchParams({grant_type:'authorization_code',code,client_id:APP_CONFIG.clientId,code_verifier:pk.verifier,redirect_uri:APP_CONFIG.redirectUri});
     const r=await fetch(SSO_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); if(!r.ok)throw new Error();
-    const tok=await r.json(); const pl=jwtPayload(tok.access_token);
-    session={access:tok.access_token,refresh:tok.refresh_token,expires:Date.now()+(tok.expires_in||1200)*1000,charId:(pl.sub||'').split(':').pop(),charName:pl.name,clientId:APP_CONFIG.clientId};
-    lset(AUTH_KEY,session); ldel('eve_jfp_pkce');
+    const tok=await r.json(); const pl=jwtPayload(tok.access_token); const cid=(pl.sub||'').split(':').pop();
+    chars[cid]={access:tok.access_token,refresh:tok.refresh_token,expires:Date.now()+(tok.expires_in||1200)*1000,charName:pl.name};
+    saveChars(); ldel('eve_jfp_pkce');
   }catch(e){}
 }
-async function refreshAuth(){ if(!session||!session.refresh)return null;
-  try{ const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:session.refresh,client_id:APP_CONFIG.clientId});
+async function refreshChar(cid){ const c=chars[cid]; if(!c||!c.refresh)return null;
+  try{ const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:c.refresh,client_id:APP_CONFIG.clientId});
     const r=await fetch(SSO_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); if(!r.ok)throw new Error();
-    const tok=await r.json(); session={...session,access:tok.access_token,refresh:tok.refresh_token||session.refresh,expires:Date.now()+(tok.expires_in||1200)*1000}; lset(AUTH_KEY,session); return session;
-  }catch(e){return null;} }
-async function ensureToken(){ if(!session)return null; if(session.expires>Date.now()+60000)return session; return await refreshAuth(); }
-function logout(){ session=null; ldel(AUTH_KEY); pilotSys=null; renderAuth(); draw(); }
-window.logout=logout;
+    const tok=await r.json(); chars[cid]={...c,access:tok.access_token,refresh:tok.refresh_token||c.refresh,expires:Date.now()+(tok.expires_in||1200)*1000}; saveChars(); return chars[cid];
+  }catch(e){ return null; } }
+async function tokenFor(cid){ const c=chars[cid]; if(!c)return null; if(c.expires>Date.now()+60000)return c; return await refreshChar(cid); }
+function logoutChar(cid){ delete chars[cid]; delete pilotByChar[cid];
+  for(const w of waypoints) if(w.char===cid) w.char=null;
+  saveChars(); renderAuth(); renderWps(); draw(); }
+window.logoutChar=logoutChar;
 function renderAuth(){ const a=document.getElementById('authArea');
-  if(session) a.innerHTML=`<span class="pilot-chip"><img src="https://images.evetech.net/characters/${session.charId}/portrait?size=32" onerror="this.style.display='none'"><span class="pn">${session.charName||'pilot'}</span><span class="px" title="Sign out" onclick="logout()">✕</span></span>`;
-  else a.innerHTML=`<button class="auth-btn" onclick="openLogin()">Sign in with EVE</button>`;
+  const chips=Object.entries(chars).map(([cid,c])=>`<span class="pilot-chip"><img src="https://images.evetech.net/characters/${cid}/portrait?size=32" onerror="this.style.display='none'"><span class="pn">${c.charName||'pilot'}</span><span class="px" title="Sign out" onclick="logoutChar('${cid}')">✕</span></span>`).join('');
+  a.innerHTML=chips+`<button class="auth-btn" onclick="addChar()">${anyChar()?'+ Character':'Sign in with EVE'}</button>`;
 }
-async function loadPilot(){ const t=await ensureToken(); if(!t)return;
-  try{ const r=await fetch(esiUrl('/characters/'+t.charId+'/location/'),{headers:authHeaders()}); if(!r.ok)return; const d=await r.json(); pilotSys=byId[d.solar_system_id]!=null?byId[d.solar_system_id]:null; draw(); }catch(e){} }
+async function loadPilots(){ for(const cid of Object.keys(chars)){ const t=await tokenFor(cid); if(!t)continue;
+  try{ const r=await fetch(esiUrl('/characters/'+cid+'/location/'),{headers:{Authorization:'Bearer '+t.access}}); if(!r.ok)continue; const d=await r.json();
+    pilotByChar[cid]=byId[d.solar_system_id]!=null?byId[d.solar_system_id]:null; }catch(e){} }
+  draw();
+}
+function authHeaders(){ return {}; } // public ESI layers need no auth (avoids stale-token 401s)
 
 // ---- sovereignty (public ESI) ----
 let sovById={}, sovNames={}, showSov=true, sovLoaded=false; const allianceHue={};
@@ -422,22 +443,28 @@ search.addEventListener('keydown',e=>{ if(!drop.classList.contains('on'))return;
 function hiDrop(){ drop.querySelectorAll('.opt').forEach((o,n)=>o.classList.toggle('hi',n===dropHi)); }
 document.addEventListener('click',e=>{ if(!e.target.closest('.srch')) drop.classList.remove('on'); });
 
-function addWp(i){ waypoints.push(i); search.value=''; drop.classList.remove('on'); if(showSta)loadStations(i); renderWps(); renderRoute(); draw(); }
-function removeWp(n){ waypoints.splice(n,1); renderWps(); renderRoute(); draw(); }
+function addWp(i){ waypoints.push({i,char:null}); search.value=''; drop.classList.remove('on'); if(showSta)loadStations(i); renderWps(); renderRoute(); draw(); if(routeConfirmed) confirmRoute(); }
+function removeWp(n){ waypoints.splice(n,1); renderWps(); renderRoute(); draw(); if(routeConfirmed) confirmRoute(); }
 window.removeWp=removeWp;
+function assignChar(n,cid){ if(waypoints[n]) waypoints[n].char=cid||null; renderWps(); renderRoute(); }
+window.assignChar=assignChar;
 
 function renderWps(){
   const el=document.getElementById('wps');
   if(!waypoints.length){ el.innerHTML='<div class="wp-empty">No waypoints. Search a system, or click one on the map.<br>First waypoint is your origin (any sec); the rest must be low/null-sec.</div>'; return; }
-  el.innerHTML=waypoints.map((i,n)=>{ const hs=n>0&&secClass(SYS[i][2])==='hi';
-    return `<div class="wp${hs?' hs':''}"><span class="ord">${n===0?'◎':n}</span><span class="nm">${SYS[i][0]} <span style="color:${secColor(SYS[i][2])}">${roundSec(SYS[i][2]).toFixed(1)}</span><div class="rg">${regionOf(i)}</div></span><span class="x" onclick="removeWp(${n})">✕</span></div>`; }).join('');
+  const charOpts=(sel)=>`<option value="">— assign char —</option>`+Object.entries(chars).map(([cid,c])=>`<option value="${cid}" ${sel===cid?'selected':''}>${(c.charName||'pilot')}</option>`).join('');
+  el.innerHTML=waypoints.map((w,n)=>{ const i=w.i, hs=n>0&&secClass(SYS[i][2])==='hi';
+    return `<div class="wp${hs?' hs':''}"><span class="ord">${n===0?'◎':n}</span>
+      <span class="nm">${SYS[i][0]} <span style="color:${secColor(SYS[i][2])}">${roundSec(SYS[i][2]).toFixed(1)}</span><div class="rg">${regionOf(i)}</div></span>
+      ${anyChar()?`<select class="wpchar" onchange="assignChar(${n},this.value)">${charOpts(w.char)}</select>`:''}
+      <span class="x" onclick="removeWp(${n})">✕</span></div>`; }).join('');
 }
 
 // ---- route computation ----
 function renderRoute(){
   // reachable systems from the last waypoint (exact ly), for the map highlight
   reachable=null;
-  if(waypoints.length){ const o=waypoints[waypoints.length-1], mr=maxRange(); const out=[];
+  if(waypoints.length){ const o=waypoints[waypoints.length-1].i, mr=maxRange(); const out=[];
     for(let i=0;i<N;i++){ if(i===o)continue; if(!jumpable(i))continue; if(lyBetween(o,i)<=mr) out.push(i); }
     reachable=out;
   }
@@ -446,7 +473,7 @@ function renderRoute(){
   const fpl=fuelPerLy(), mr=maxRange(), iso=SHIPS[ship].iso, mod=fatRed?0.1:1.0;
   let totFuel=0, totLy=0, fatigue=0, totTime=0, anyBad=false; let rows='';
   for(let n=1;n<waypoints.length;n++){
-    const a=waypoints[n-1], b=waypoints[n];
+    const a=waypoints[n-1].i, b=waypoints[n].i;
     const ly=lyBetween(a,b);
     const dest=SYS[b], destHi=secClass(dest[2])==='hi';
     const destBlocked=!jumpable(b);
@@ -455,7 +482,7 @@ function renderRoute(){
     if(destHi) warn='Cannot jump into high-sec — light a cyno in low/null.';
     else if(destBlocked) warn='Destination cannot be jumped to (Pochven/Jove).';
     else if(over) warn='Out of jump range ('+fmt1(ly)+' > '+fmt1(mr)+' ly).';
-    const bad=destHi||destBlocked||over||ly==null&&false;
+    const bad=destHi||destBlocked||over;
     if(bad) anyBad=true;
     let fuel=null,cd=null;
     if(ly!=null){ totLy+=ly; fuel=Math.ceil(ly*fpl); if(!destHi&&!destBlocked&&!over) totFuel+=fuel;
@@ -463,9 +490,13 @@ function renderRoute(){
       const newFat=Math.min(7200, Math.max(fatigue,10)*(1+ly*mod));
       fatigue=Math.max(0,newFat-cd); totTime+=cd;
     }
+    const cw=waypoints[n].char, cn=cw&&chars[cw]?chars[cw].charName:null;
+    const thr=routeConfirmed?threatNear(b):null;
     rows+=`<div class="leg ${bad?'bad':'ok'}">
       <div class="leg-top"><span>${SYS[a][0]} → ${SYS[b][0]}</span><span class="ly${over?' over':''}">${ly==null?'—':fmt1(ly)+' ly'}</span></div>
       <div class="leg-meta"><span class="fuel">${fuel==null?'—':fmt(fuel)+' '+iso.replace(' Isotopes','')}</span><span>cooldown ${mins(cd)} · fatigue ${mins(fatigue)}</span></div>
+      ${cn?`<div class="leg-char">assigned: ${cn}</div>`:''}
+      ${thr!=null?`<div class="leg-threat ${thr.cls}">threat ≤3j: ${thr.kills} kill${thr.kills!==1?'s':''} · ${thr.label}</div>`:''}
       ${warn?`<div class="warn">⚠ ${warn}</div>`:''}</div>`;
   }
   legsEl.innerHTML=rows;
@@ -474,6 +505,7 @@ function renderRoute(){
     <div class="tile"><div class="l">Total distance</div><div class="v cy">${calibrated?fmt1(totLy)+' ly':'—'}</div><div class="sub">${waypoints.length-1} jump${waypoints.length-1!==1?'s':''}</div></div>
     <div class="tile"><div class="l">Min route time</div><div class="v cy">${calibrated?mins(totTime):'—'}</div><div class="sub">cooldowns, jump-on-cd</div></div>
     <div class="tile"><div class="l">Fuel / ly · range</div><div class="v">${fmt(fpl)}</div><div class="sub">max ${fmt1(mr)} ly @ JDC ${roman(JDC)}</div></div>`;
+  renderConfirm();
   renderNote(anyBad);
 }
 function renderNote(anyBad){
@@ -537,10 +569,10 @@ function draw(){
     }
     ctx.lineWidth=1.6*DPR; ctx.strokeStyle='rgba(201,168,104,0.85)';
     ctx.beginPath();
-    for(let n=0;n<waypoints.length;n++){ const i=waypoints[n]; const X=sx(wx(i)),Y=sy(wy(i)); if(n===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y); }
+    for(let n=0;n<waypoints.length;n++){ const i=waypoints[n].i; const X=sx(wx(i)),Y=sy(wy(i)); if(n===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y); }
     ctx.stroke();
     // waypoint markers
-    for(let n=0;n<waypoints.length;n++){ const i=waypoints[n]; const X=sx(wx(i)),Y=sy(wy(i));
+    for(let n=0;n<waypoints.length;n++){ const i=waypoints[n].i; const X=sx(wx(i)),Y=sy(wy(i));
       ctx.fillStyle=n===0?'#e8d296':'#c9a868'; ctx.beginPath(); ctx.arc(X,Y,5*DPR,0,7); ctx.fill();
       ctx.strokeStyle='#030507'; ctx.lineWidth=1.5*DPR; ctx.stroke();
       ctx.fillStyle='#e8d296'; ctx.font=`${11*DPR}px IBM Plex Mono`; ctx.textBaseline='middle';
@@ -552,10 +584,20 @@ function draw(){
     for(const sid in staCache){ const c=staCache[sid]; if(!c||c.count<=0)continue; const i=byId[sid]; if(i==null)continue;
       const X=sx(wx(i)),Y=sy(wy(i)); const s=4.5*DPR; ctx.strokeRect(X-s,Y-s,2*s,2*s); }
   }
-  // pilot marker
-  if(pilotSys!=null){ const X=sx(wx(pilotSys)),Y=sy(wy(pilotSys));
+  // confirmed threat zone (≤3 jumps of route): outline + live threat coloring
+  if(routeConfirmed && threatZone.size){
+    for(const idx of threatZone){ const X=sx(wx(idx)),Y=sy(wy(idx)); if(X<-10||X>w+10||Y<-10||Y>h+10)continue;
+      const tk=sysThreat(idx); const rad=Math.max(3,view.zoom*2.2)*DPR;
+      ctx.strokeStyle = tk===0?'rgba(122,160,180,0.5)' : tk<=3?'rgba(216,162,74,0.9)' : tk<=10?'rgba(214,106,90,0.95)' : 'rgba(255,90,70,1)';
+      ctx.lineWidth=(tk>3?2:1.2)*DPR; ctx.beginPath(); ctx.arc(X,Y,rad,0,7); ctx.stroke();
+      if(tk>0){ ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); ctx.arc(X,Y,rad*0.45,0,7); ctx.fill(); }
+    }
+  }
+  // pilot markers — one per signed-in character
+  for(const cid in pilotByChar){ const pi=pilotByChar[cid]; if(pi==null)continue; const X=sx(wx(pi)),Y=sy(wy(pi));
     ctx.strokeStyle='#a0d0e0'; ctx.lineWidth=2*DPR; ctx.beginPath(); ctx.arc(X,Y,8*DPR,0,7); ctx.stroke();
-    ctx.fillStyle='#a0d0e0'; ctx.font=`${10*DPR}px IBM Plex Mono`; ctx.textBaseline='middle'; ctx.fillText('you', X+11*DPR, Y);
+    ctx.fillStyle='#a0d0e0'; ctx.font=`${9.5*DPR}px IBM Plex Mono`; ctx.textBaseline='middle';
+    ctx.fillText((chars[cid]&&chars[cid].charName)||'pilot', X+11*DPR, Y);
   }
   // system names — hidden until zoomed in enough to be legible (zoom-in raised 50%)
   if(view.zoom>=5.1){
@@ -620,6 +662,70 @@ async function loadZk(id){
   }catch(e){ if(document.getElementById('zk')) document.getElementById('zk').innerHTML='zKillboard API blocked by browser (CORS) — use the link below. <span style="color:var(--muted2)">'+t+'</span>'; }
 }
 
+// ===== gate graph + 3-jump threat zone + live zKillboard threat feed =====
+const ADJ=(()=>{ const a=Array.from({length:N},()=>[]); for(const j of UNIVERSE.jumps){ a[j[0]].push(j[1]); a[j[1]].push(j[0]); } return a; })();
+function neighborhood(seedIdx, depth){ const seen=new Set([seedIdx]); let frontier=[seedIdx];
+  for(let d=0; d<depth; d++){ const next=[]; for(const u of frontier){ for(const v of ADJ[u]){ if(!seen.has(v)){ seen.add(v); next.push(v); } } } frontier=next; }
+  return seen; }
+
+let routeConfirmed=false, threatZone=new Set(), zoneOf=new Map();
+let threatById={};       // systemId -> [{t,v}]   live kills (rolling 1h)
+let zkWS=null, wsConnected=false, wsFeedIdx=0, wsKillCount=0;
+const THREAT_WINDOW=3600000; // 1 hour
+const FEEDS=[
+  {url:'wss://zkillboard.com/websocket/', sub:()=>JSON.stringify({action:'sub',channel:'killstream'})},
+  {url:()=>'wss://killmail.stream/websocket/jfp-'+randStr(6), sub:null},
+];
+function buildZone(){ threatZone=new Set(); zoneOf=new Map();
+  for(const w of waypoints){ const set=neighborhood(w.i,3); zoneOf.set(w.i,set); for(const x of set) threatZone.add(x); } }
+function confirmRoute(){ if(waypoints.length<2) return; routeConfirmed=true; buildZone(); connectThreat(); renderConfirm(); renderRoute(); draw(); }
+function unconfirmRoute(){ routeConfirmed=false; threatZone=new Set(); zoneOf=new Map(); closeThreat(); renderConfirm(); renderRoute(); draw(); }
+window.confirmRoute=confirmRoute; window.unconfirmRoute=unconfirmRoute;
+
+function connectThreat(){ closeThreat(); openFeed(0); }
+function closeThreat(){ wsConnected=false; if(zkWS){ try{ zkWS.onclose=null; zkWS.close(); }catch(e){} zkWS=null; } }
+function openFeed(idx){ if(!routeConfirmed) return; wsFeedIdx=idx; const feed=FEEDS[idx]; if(!feed){ setWsStat(false); return; }
+  let opened=false;
+  try{ const url=typeof feed.url==='function'?feed.url():feed.url; zkWS=new WebSocket(url); }catch(e){ openFeed(idx+1); return; }
+  zkWS.onopen=()=>{ opened=true; wsConnected=true; if(feed.sub) try{ zkWS.send(feed.sub()); }catch(e){} setWsStat(true); };
+  zkWS.onmessage=(ev)=>{ try{ const data=JSON.parse(ev.data); ingestKill(data); }catch(e){} };
+  zkWS.onerror=()=>{};
+  zkWS.onclose=()=>{ wsConnected=false; setWsStat(false); if(!routeConfirmed) return;
+    if(!opened){ openFeed(idx+1); }                       // this endpoint failed → try next
+    else setTimeout(()=>{ if(routeConfirmed) openFeed(idx); }, 4000); }; // reconnect same
+}
+function ingestKill(data){
+  const km=data.killmail||(data.package&&data.package.killmail)||data;
+  const sid=km.solar_system_id||data.solar_system_id||(data.package&&data.package.killmail&&data.package.killmail.solar_system_id);
+  if(!sid) return; const idx=byId[sid]; if(idx==null||!threatZone.has(idx)) return;
+  const v=(data.zkb&&data.zkb.totalValue)||(data.package&&data.package.zkb&&data.package.zkb.totalValue)||0;
+  (threatById[sid]=threatById[sid]||[]).push({t:Date.now(),v}); wsKillCount++;
+  scheduleThreatRender();
+}
+let trQueued=false;
+function scheduleThreatRender(){ if(trQueued)return; trQueued=true; setTimeout(()=>{ trQueued=false; renderRoute(); draw(); }, 1500); }
+function pruneThreat(){ const cut=Date.now()-THREAT_WINDOW; for(const k in threatById){ threatById[k]=threatById[k].filter(x=>x.t>=cut); if(!threatById[k].length) delete threatById[k]; } }
+function liveKillsAt(id){ const a=threatById[id]; if(!a)return 0; const cut=Date.now()-THREAT_WINDOW; let c=0; for(const x of a) if(x.t>=cut)c++; return c; }
+function sysThreat(idx){ const id=SYS[idx][1];
+  const live=liveKillsAt(id);
+  const esi=killmap[id]?(killmap[id].s+killmap[id].p):0; // ESI ship+pod kills last hour (baseline)
+  return wsConnected?Math.max(live,esi):esi; }
+function threatNear(b){ const set=zoneOf.get(b); if(!set) return null; let kills=0; for(const idx of set) kills+=sysThreat(idx);
+  const cls=kills===0?'t0':kills<=3?'t1':kills<=10?'t2':'t3'; const label=kills===0?'clear':kills<=3?'low':kills<=10?'elevated':'HOT';
+  return {kills,cls,label}; }
+function setWsStat(ok){ const d=document.getElementById('wsDot'); if(d) d.className='dot '+(ok?'ok':'err'); const t=document.getElementById('wsTxt'); if(t) t.textContent=ok?'live threat feed':'feed offline · ESI fallback'; }
+
+function renderConfirm(){ const el=document.getElementById('confirmBar'); if(waypoints.length<2){ el.innerHTML=''; return; }
+  if(!routeConfirmed){ el.innerHTML=`<div class="confirm-bar"><button class="confirm-btn" onclick="confirmRoute()">Confirm route · arm threat watch</button></div>`; return; }
+  const zoneN=threatZone.size; let total=0; for(const idx of threatZone) total+=sysThreat(idx);
+  el.innerHTML=`<div class="confirm-bar">
+    <button class="confirm-btn live" onclick="unconfirmRoute()">● Live — stop threat watch</button>
+    <div class="confirm-stat"><span class="dot" id="wsDot"></span><span id="wsTxt">connecting…</span></div>
+    <div class="confirm-stat">Watching ${zoneN} systems (≤3 jumps) · ${total} recent kill${total!==1?'s':''} in zone</div>
+  </div>`;
+  setWsStat(wsConnected);
+}
+
 // map buttons
 document.getElementById('zin').onclick=()=>{view.zoom=Math.min(120,view.zoom*1.3);draw();};
 document.getElementById('zout').onclick=()=>{view.zoom=Math.max(0.1,view.zoom/1.3);draw();};
@@ -627,19 +733,25 @@ document.getElementById('zfit').onclick=fit;
 document.getElementById('zgate').onclick=e=>{showGates=!showGates;e.target.classList.toggle('on',showGates);draw();};
 document.getElementById('zheat').onclick=e=>{showHeat=!showHeat;if(showHeat)showSov=false;document.getElementById('zsov').classList.remove('on');e.target.classList.toggle('on',showHeat);draw();};
 document.getElementById('zsov').onclick=e=>{showSov=!showSov;if(showSov){showHeat=false;document.getElementById('zheat').classList.remove('on');loadSov();}e.target.classList.toggle('on',showSov);draw();};
-document.getElementById('zsta').onclick=e=>{showSta=!showSta;e.target.classList.toggle('on',showSta);if(showSta)waypoints.forEach(i=>loadStations(i));draw();};
-document.getElementById('zpilot').onclick=()=>{ if(!session){openLogin();return;} if(pilotSys==null){loadPilot();return;} view.x=wx(pilotSys);view.y=wy(pilotSys);view.zoom=Math.max(view.zoom,3);draw(); };
+document.getElementById('zsta').onclick=e=>{showSta=!showSta;e.target.classList.toggle('on',showSta);if(showSta)waypoints.forEach(w=>loadStations(w.i));draw();};
+document.getElementById('zpilot').onclick=()=>{ if(!anyChar()){openLogin();return;}
+  const ids=Object.keys(pilotByChar).filter(c=>pilotByChar[c]!=null);
+  if(!ids.length){ loadPilots(); return; }
+  const pi=pilotByChar[ids[0]]; view.x=wx(pi);view.y=wy(pi);view.zoom=Math.max(view.zoom,3);draw(); };
 
 // init
-session=lget(AUTH_KEY)||null;
+loadChars();
 renderWps(); renderRoute(); resize(); fit();
 document.getElementById('calPill').style.cursor='default';
-document.getElementById('zgate').classList.add('on');   // gate links on by default
-document.getElementById('zsov').classList.add('on');    // sovereignty on by default
-(async function(){ await resumeAuth(); session=session||lget(AUTH_KEY); renderAuth();
-  calibrate(); loadKills(); loadSov(); if(session) loadPilot(); })();
+document.getElementById('zgate').classList.add('on');
+document.getElementById('zsov').classList.add('on');
+(async function(){ await resumeAuth(); loadChars(); renderAuth(); renderWps();
+  calibrate(); loadKills(); loadSov(); if(anyChar()) loadPilots(); })();
 setInterval(loadKills, 5*60000);
-setInterval(()=>{ if(pinned && tipSysId!=null) loadZk(tipSysId); }, 6000); // zKillboard auto-refresh
+setInterval(()=>{ if(pinned && tipSysId!=null) loadZk(tipSysId); }, 6000);
+setInterval(()=>{ if(anyChar()) loadPilots(); }, 30000);   // refresh pilot locations
+setInterval(()=>{ if(routeConfirmed){ pruneThreat(); renderRoute(); draw(); } }, 15000);
+
 </script>
 </body>
 </html>
