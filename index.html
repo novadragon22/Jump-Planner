@@ -110,6 +110,9 @@
   .mbtn.on{border-color:var(--gold);color:var(--gold);background:rgba(201,168,104,.12)}
 
   .tip{position:absolute;z-index:50;pointer-events:none;background:var(--panel);border:1px solid var(--gold-dim);padding:9px 11px;font-family:var(--mono);font-size:11px;max-width:240px;display:none;box-shadow:0 8px 30px rgba(0,0,0,.6)}
+  .tip.pinned{pointer-events:auto;border-color:var(--gold)}
+  .tipx{float:right;margin:-2px -3px 0 8px;color:#6c8592;cursor:pointer;font-size:12px}
+  .tipx:hover{color:var(--rederr)}
   .tip.on{display:block}
   .tip .nm{color:var(--gold-bright);font-size:12.5px;font-weight:600;margin-bottom:3px}
   .tip .rg{color:var(--muted);font-size:9.5px;margin-bottom:6px}
@@ -250,9 +253,10 @@ function jumpable(i){ const c=secClass(SYS[i][2]); const rg=regionOf(i); return 
 let ship='anshar', JDC=5, JFC=5, JF=5, fatRed=true;
 let waypoints=[]; // system indices
 let killmap={}; // id -> {s,p,n}
-let showGates=false, showHeat=false;
+let showGates=true, showHeat=false;
 let maxKill=1;
 let reachable=null; // indices within one jump of the last waypoint
+let tipSysId=null;  // system whose pinned tooltip is open (for zKill auto-refresh)
 
 // ---- ship/skill UI ----
 const shipsEl=document.getElementById('ships');
@@ -344,7 +348,7 @@ async function loadPilot(){ const t=await ensureToken(); if(!t)return;
   try{ const r=await fetch(esiUrl('/characters/'+t.charId+'/location/'),{headers:authHeaders()}); if(!r.ok)return; const d=await r.json(); pilotSys=byId[d.solar_system_id]!=null?byId[d.solar_system_id]:null; draw(); }catch(e){} }
 
 // ---- sovereignty (public ESI) ----
-let sovById={}, sovNames={}, showSov=false, sovLoaded=false; const allianceHue={};
+let sovById={}, sovNames={}, showSov=true, sovLoaded=false; const allianceHue={};
 function hue(id){ if(allianceHue[id]!=null)return allianceHue[id]; let h=0; const s=''+id; for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))%360; allianceHue[id]=h; return h; }
 async function loadSov(){ if(sovLoaded)return; sovLoaded=true;
   try{ const r=await fetch(esiUrl('/sovereignty/map/'),{headers:authHeaders()}); if(!r.ok)throw new Error(); const d=await r.json();
@@ -563,14 +567,15 @@ function draw(){
 }
 
 // interaction
-let dragging=false,last=null,moved=0;
+let dragging=false,last=null,moved=0,pinned=false;
 cv.addEventListener('mousedown',e=>{dragging=true;moved=0;last=[e.clientX,e.clientY];cv.classList.add('drag');});
 window.addEventListener('mouseup',()=>{dragging=false;cv.classList.remove('drag');});
 window.addEventListener('mousemove',e=>{
   if(dragging){ const dx=e.clientX-last[0],dy=e.clientY-last[1]; moved+=Math.abs(dx)+Math.abs(dy); last=[e.clientX,e.clientY];
-    view.x-=dx*DPR/view.zoom; view.y-=dy*DPR/view.zoom; draw(); tip.classList.remove('on'); return; }
+    view.x-=dx*DPR/view.zoom; view.y-=dy*DPR/view.zoom; draw(); if(moved>4){pinned=false;tip.classList.remove('on');} return; }
   hover(e);
 });
+cv.addEventListener('mouseleave',()=>{ if(!pinned) tip.classList.remove('on'); });
 cv.addEventListener('wheel',e=>{ e.preventDefault(); const r=cv.getBoundingClientRect();
   const mx=(e.clientX-r.left)*DPR,my=(e.clientY-r.top)*DPR;
   const wbx=(mx-W()/2)/view.zoom+view.x, wby=(my-H()/2)/view.zoom+view.y;
@@ -579,14 +584,18 @@ cv.addEventListener('wheel',e=>{ e.preventDefault(); const r=cv.getBoundingClien
 },{passive:false});
 function nearest(e){ const r=cv.getBoundingClientRect(); const mx=(e.clientX-r.left)*DPR,my=(e.clientY-r.top)*DPR;
   let best=-1,bd=14*DPR*14*DPR; for(let i=0;i<N;i++){ const px=sx(wx(i)),py=sy(wy(i)); const d=(px-mx)*(px-mx)+(py-my)*(py-my); if(d<bd){bd=d;best=i;} } return best; }
-function hover(e){ const i=nearest(e); if(i<0){tip.classList.remove('on');return;} showTip(i,e.clientX,e.clientY); }
-cv.addEventListener('click',e=>{ if(moved>4)return; const i=nearest(e); if(i>=0) showTip(i,e.clientX,e.clientY,true); });
+function hover(e){ if(pinned)return; const i=nearest(e); if(i<0){tip.classList.remove('on');return;} showTip(i,e.clientX,e.clientY); }
+cv.addEventListener('click',e=>{ if(moved>4)return; const i=nearest(e);
+  if(i>=0){ pinned=true; showTip(i,e.clientX,e.clientY,true); }
+  else { pinned=false; tipSysId=null; tip.classList.remove('on'); } });
+window.hideTip=()=>{ pinned=false; tipSysId=null; tip.classList.remove('on'); };
 
 function showTip(i,cx,cy,pin){
   const s=SYS[i], id=s[1], k=killmap[id]||{s:0,p:0,n:0};
   const r=cv.getBoundingClientRect();
   const holder=sovHolder(i);
-  tip.innerHTML=`<div class="nm">${s[0]} <span style="color:${secColor(s[2])}">${roundSec(s[2]).toFixed(1)}</span></div>
+  if(pin) tipSysId=id;
+  tip.innerHTML=`<div class="nm">${s[0]} <span style="color:${secColor(s[2])}">${roundSec(s[2]).toFixed(1)}</span>${pin?'<span class="tipx" onclick="hideTip()">✕</span>':''}</div>
     <div class="rg">${regionOf(i)} · ${secClass(s[2])==='hi'?'High-sec':secClass(s[2])==='lo'?'Low-sec':'Null-sec'}${jumpable(i)?'':' · no-jump'}</div>
     ${holder?`<div class="kv"><span>Sovereignty</span><b>${holder}</b></div>`:''}
     <div class="kv"><span>Ship kills (1h)</span><b>${k.s}</b></div>
@@ -595,6 +604,7 @@ function showTip(i,cx,cy,pin){
     <div class="kv" id="staLine"><span>NPC stations</span><b>${staCache[id]&&staCache[id].count>=0?staCache[id].count:'…'}</b></div>
     <div class="zk" id="zk">zKillboard: loading…</div>
     <div class="act"><button onclick="addWp(${i})">+ Waypoint</button><a href="https://zkillboard.com/system/${id}/" target="_blank" rel="noopener">zKillboard ↗</a><a href="https://evemaps.dotlan.net/system/${s[0].replace(/ /g,'_')}" target="_blank" rel="noopener">Dotlan ↗</a></div>`;
+  tip.classList.toggle('pinned',!!pin);
   const ZF=(r.width/cv.offsetWidth)||1; // CSS UI-zoom factor (getBoundingClientRect is post-zoom, offsetWidth pre-zoom)
   const lw=r.width/ZF, lh=r.height/ZF;
   let x=(cx-r.left)/ZF+14, y=(cy-r.top)/ZF+14; if(x>lw-250)x=lw-260; if(y>lh-200)y=lh-210;
@@ -603,10 +613,11 @@ function showTip(i,cx,cy,pin){
 }
 async function loadZk(id){
   const el=document.getElementById('zk'); if(!el)return;
+  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   try{ const r=await fetch('https://zkillboard.com/api/kills/systemID/'+id+'/',{headers:{'Accept':'application/json'}});
     if(!r.ok) throw new Error(); const d=await r.json();
-    if(document.getElementById('zk')) document.getElementById('zk').textContent='zKillboard: '+(Array.isArray(d)?d.length:0)+' recent kills on record';
-  }catch(e){ if(document.getElementById('zk')) document.getElementById('zk').innerHTML='zKillboard API blocked by browser (CORS) — use the link below.'; }
+    if(document.getElementById('zk')) document.getElementById('zk').textContent='zKillboard: '+(Array.isArray(d)?d.length:0)+' recent kills · '+t;
+  }catch(e){ if(document.getElementById('zk')) document.getElementById('zk').innerHTML='zKillboard API blocked by browser (CORS) — use the link below. <span style="color:var(--muted2)">'+t+'</span>'; }
 }
 
 // map buttons
@@ -623,9 +634,12 @@ document.getElementById('zpilot').onclick=()=>{ if(!session){openLogin();return;
 session=lget(AUTH_KEY)||null;
 renderWps(); renderRoute(); resize(); fit();
 document.getElementById('calPill').style.cursor='default';
+document.getElementById('zgate').classList.add('on');   // gate links on by default
+document.getElementById('zsov').classList.add('on');    // sovereignty on by default
 (async function(){ await resumeAuth(); session=session||lget(AUTH_KEY); renderAuth();
-  calibrate(); loadKills(); if(session) loadPilot(); })();
+  calibrate(); loadKills(); loadSov(); if(session) loadPilot(); })();
 setInterval(loadKills, 5*60000);
+setInterval(()=>{ if(pinned && tipSysId!=null) loadZk(tipSysId); }, 6000); // zKillboard auto-refresh
 </script>
 </body>
 </html>
