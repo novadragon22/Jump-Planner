@@ -574,7 +574,7 @@ window.addEventListener('mousemove',e=>{
 cv.addEventListener('wheel',e=>{ e.preventDefault(); const r=cv.getBoundingClientRect();
   const mx=(e.clientX-r.left)*DPR,my=(e.clientY-r.top)*DPR;
   const wbx=(mx-W()/2)/view.zoom+view.x, wby=(my-H()/2)/view.zoom+view.y;
-  const f=e.deltaY<0?1.18:1/1.18; view.zoom=Math.max(0.15,Math.min(20,view.zoom*f));
+  const f=e.deltaY<0?1.18:1/1.18; view.zoom=Math.max(0.1,Math.min(120,view.zoom*f));
   view.x=wbx-(mx-W()/2)/view.zoom; view.y=wby-(my-H()/2)/view.zoom; draw();
 },{passive:false});
 function nearest(e){ const r=cv.getBoundingClientRect(); const mx=(e.clientX-r.left)*DPR,my=(e.clientY-r.top)*DPR;
@@ -595,7 +595,9 @@ function showTip(i,cx,cy,pin){
     <div class="kv" id="staLine"><span>NPC stations</span><b>${staCache[id]&&staCache[id].count>=0?staCache[id].count:'…'}</b></div>
     <div class="zk" id="zk">zKillboard: loading…</div>
     <div class="act"><button onclick="addWp(${i})">+ Waypoint</button><a href="https://zkillboard.com/system/${id}/" target="_blank" rel="noopener">zKillboard ↗</a><a href="https://evemaps.dotlan.net/system/${s[0].replace(/ /g,'_')}" target="_blank" rel="noopener">Dotlan ↗</a></div>`;
-  let x=cx-r.left+14, y=cy-r.top+14; if(x>r.width-250)x=r.width-260; if(y>r.height-200)y=r.height-210;
+  const ZF=(r.width/cv.offsetWidth)||1; // CSS UI-zoom factor (getBoundingClientRect is post-zoom, offsetWidth pre-zoom)
+  const lw=r.width/ZF, lh=r.height/ZF;
+  let x=(cx-r.left)/ZF+14, y=(cy-r.top)/ZF+14; if(x>lw-250)x=lw-260; if(y>lh-200)y=lh-210;
   tip.style.left=x+'px'; tip.style.top=y+'px'; tip.classList.add('on');
   if(pin){ loadZk(id); loadStations(i).then(c=>{ const el=document.getElementById('staLine'); if(el&&c) el.innerHTML=`<span>NPC stations</span><b>${c.count}</b>`; }); }
 }
@@ -608,8 +610,8 @@ async function loadZk(id){
 }
 
 // map buttons
-document.getElementById('zin').onclick=()=>{view.zoom=Math.min(20,view.zoom*1.3);draw();};
-document.getElementById('zout').onclick=()=>{view.zoom=Math.max(0.15,view.zoom/1.3);draw();};
+document.getElementById('zin').onclick=()=>{view.zoom=Math.min(120,view.zoom*1.3);draw();};
+document.getElementById('zout').onclick=()=>{view.zoom=Math.max(0.1,view.zoom/1.3);draw();};
 document.getElementById('zfit').onclick=fit;
 document.getElementById('zgate').onclick=e=>{showGates=!showGates;e.target.classList.toggle('on',showGates);draw();};
 document.getElementById('zheat').onclick=e=>{showHeat=!showHeat;if(showHeat)showSov=false;document.getElementById('zsov').classList.remove('on');e.target.classList.toggle('on',showHeat);draw();};
